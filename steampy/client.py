@@ -9,7 +9,7 @@ import requests
 
 from steampy import guard
 from steampy.confirmation import ConfirmationExecutor
-from steampy.exceptions import SevenDaysHoldException, ApiException, TooManyRequests
+from steampy.exceptions import SevenDaysHoldException, ApiException
 from steampy.login import LoginExecutor, InvalidCredentials
 from steampy.market import SteamMarket
 from steampy.models import Asset, TradeOfferState, SteamUrl, GameOptions
@@ -113,11 +113,12 @@ class SteamClient:
 
     @login_required
     def logout(self) -> None:
-        url = f'{SteamUrl.STORE_URL}/login/logout/'
+        url = f'{SteamUrl.COMMUNITY_URL}/login/logout/'
         data = {'sessionid': self._get_session_id()}
         self._session.post(url, data=data)
 
         if self.is_session_alive():
+            self.clear_session_cookies()
             raise Exception('Logout unsuccessful')
 
         self.was_login_executed = False
@@ -132,7 +133,22 @@ class SteamClient:
     @login_required
     def is_session_alive(self) -> bool:
         steam_login = self.username
-        main_page_response = self._session.get(SteamUrl.COMMUNITY_URL)
+        headers = {
+            'Cache-Control': 'max-age=0',
+            'Sec-Ch-Ua': '"Not?A_Brand";v="8", "Chromium";v="108"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': "Windows",
+            'Upgrade-Insecure-Requests': '1',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.5359.125 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-User': '?1',
+            'Sec-Fetch-Dest': 'document',
+            'Accept-Encoding': 'gzip, deflate',
+            'Accept-Language': 'zh-CN,zh;q=0.9',
+        }
+        main_page_response = self._session.get(SteamUrl.COMMUNITY_URL, headers=headers)
         return steam_login.lower() in main_page_response.text.lower()
 
     def api_call(
@@ -163,11 +179,7 @@ class SteamClient:
         url = '/'.join((SteamUrl.COMMUNITY_URL, 'inventory', partner_steam_id, game.app_id, game.context_id))
         params = {'l': 'english', 'count': count}
 
-        full_response = self._session.get(url, params=params)
-        response_dict = full_response.json()
-        if full_response.status_code == 429:
-            raise TooManyRequests('Too many requests, try again later.')
-
+        response_dict = self._session.get(url, params=params).json()
         if response_dict is None or response_dict.get('success') != 1:
             raise ApiException('Success value should be 1.')
 
@@ -420,3 +432,8 @@ class SteamClient:
             return Decimal(balance_dict[balance_dict_key]) / 100
         else:
             return balance_dict[balance_dict_key]
+    def clear_session_cookies(self):
+        self._session.cookies.clear_session_cookies()
+        
+    
+    
