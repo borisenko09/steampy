@@ -1,7 +1,8 @@
 import re
 import bs4
 import json
-import urllib.parse as urlparse, unquote
+import urllib.parse as urlparse
+from urllib.parse import unquote
 from typing import List, Union
 from decimal import Decimal
 import requests

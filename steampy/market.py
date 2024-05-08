@@ -114,7 +114,7 @@ class SteamMarket:
     def create_sell_order(self, assetid: str, game: GameOptions, money_to_receive: str) -> dict:
         data = {
             'assetid': assetid,
-            'sessionid': self._session_id,
+            'sessionid': self._session.cookies.get_dict("steamcommunity.com")['sessionid'],
             'contextid': game.context_id,
             'appid': game.app_id,
             'amount': 1,
@@ -196,7 +196,7 @@ class SteamMarket:
 
     @login_required
     def cancel_sell_order(self, sell_listing_id: str) -> None:
-        data = {'sessionid': self._session_id}
+        data = {'sessionid': self._session.cookies.get_dict("steamcommunity.com")['sessionid']}
         headers = {'Referer': f'{SteamUrl.COMMUNITY_URL}/market/'}
         url = f'{SteamUrl.COMMUNITY_URL}/market/removelisting/{sell_listing_id}'
 
