@@ -60,6 +60,14 @@ class SteamClient:
         if login_cookies:
             self.set_login_cookies(login_cookies)
 
+    @property
+    def steam_id(self):
+        return self.steam_guard.get('steamid')
+
+    @property
+    def identity_secret(self):
+        return self.steam_guard.get('identity_secret')
+
     def set_proxies(self, proxies: dict) -> dict:
         if not isinstance(proxies, dict):
             raise TypeError(

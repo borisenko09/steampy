@@ -2,6 +2,7 @@ import json
 import urllib.parse
 from decimal import Decimal
 from http import HTTPStatus
+import time
 
 from requests import Session
 
@@ -176,6 +177,9 @@ class SteamMarket:
             'fee': fee,
             'total': price,
             'quantity': '1',
+            'billing_state': '',
+            'save_my_address': '0',
+            'confirmation': '0',
         }
         headers = {
             'Referer': f'{SteamUrl.COMMUNITY_URL}/market/listings/{game.app_id}/{urllib.parse.quote(market_name)}',
@@ -184,15 +188,26 @@ class SteamMarket:
             f'{SteamUrl.COMMUNITY_URL}/market/buylisting/{market_id}', data, headers=headers,
         ).json()
 
-        try:
-            if (success := response['wallet_info']['success']) != 1:
-                raise ApiException(
-                    f'There was a problem buying this item. Are you using the right currency? success: {success}',
-                )
-        except Exception:
-            raise ApiException(f'There was a problem buying this item. Message: {response.get("message")}')
+        if response.get('wallet_info') and response['wallet_info'].get('success') == 1:
+            return response
 
-        return response
+        if response.get('success') == 22 and response.get('confirmation', {}).get('confirmation_id'):
+            try:
+                data['confirmation'] = response['confirmation']['confirmation_id']
+                self._confirm_buy_listing()
+                time.sleep(1)
+                return self._session.post(
+                    f'{SteamUrl.COMMUNITY_URL}/market/buylisting/{market_id}', data=data, headers=headers,
+                ).json()
+            except (KeyError, TypeError) as error:
+                raise ApiException('Steam requested confirmation, but returned invalid data (confirmation_id).') from error
+            except Exception as error:
+                raise ApiException(f'An error occurred during the second confirmation step: {error}') from error
+
+        message = response.get('message')
+        if not message and response.get('wallet_info'):
+            message = response['wallet_info'].get('message')
+        raise ApiException(f'Failed to buy item. Steam message: {message}')
 
     @login_required
     def cancel_sell_order(self, sell_listing_id: str) -> None:
@@ -220,3 +235,12 @@ class SteamMarket:
             self._steam_guard['identity_secret'], self._steam_guard['steamid'], self._session,
         )
         return con_executor.confirm_sell_listing(asset_id)
+
+    def _confirm_buy_listing(self) -> dict:
+        con_executor = ConfirmationExecutor(
+            self._steam_guard['identity_secret'], self._steam_guard['steamid'], self._session,
+        )
+        confirmations = con_executor._get_confirmations()
+        for confirmation in confirmations:
+            con_executor._send_confirmation(confirmation)
+        return {'success': True, 'message': 'All pending confirmations have been accepted.'}
