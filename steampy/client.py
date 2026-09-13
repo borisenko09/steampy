@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import urllib.parse as urlparse
 from decimal import Decimal
 
 import requests
-import time
 
 from steampy import guard
 from steampy.confirmation import ConfirmationExecutor
@@ -14,6 +14,7 @@ from steampy.exceptions import ApiException, SevenDaysHoldException, TooManyRequ
 from steampy.login import InvalidCredentials, LoginExecutor
 from steampy.market import SteamMarket
 from steampy.models import Asset, GameOptions, SteamUrl, TradeOfferState
+from steampy.session import SteamSession
 from steampy.utils import (
     account_id_to_steam_id,
     get_description_key,
@@ -40,7 +41,7 @@ class SteamClient:
         proxies: dict | None = None,
     ) -> None:
         self._api_key = api_key
-        self._session = requests.Session()
+        self._session = SteamSession()
 
         if proxies:
             self.set_proxies(proxies)
@@ -62,11 +63,11 @@ class SteamClient:
 
     @property
     def steam_id(self):
-        return self.steam_guard.get('steamid')
+        return self.steam_guard.get('steamid') if self.steam_guard else None
 
     @property
     def identity_secret(self):
-        return self.steam_guard.get('identity_secret')
+        return self.steam_guard.get('identity_secret') if self.steam_guard else None
 
     def set_proxies(self, proxies: dict) -> dict:
         if not isinstance(proxies, dict):
@@ -85,6 +86,7 @@ class SteamClient:
         self.was_login_executed = True
         if self.steam_guard is None:
             self.steam_guard = {'steamid': str(self.get_steam_id())}
+        self._access_token = self._set_access_token()
         self.market._set_login_executed(self.steam_guard, self._get_session_id())
 
     @login_required
@@ -119,16 +121,13 @@ class SteamClient:
         self.market._set_login_executed(self.steam_guard, self._get_session_id())
         self._access_token = self._set_access_token()
 
-    def _set_access_token(self) ->str :
-        steam_login_secure_cookies = [cookie for cookie in self._session.cookies if cookie.name == 'steamLoginSecure']
-        cookie_value = steam_login_secure_cookies[0].value
-        decoded_cookie_value = urlparse.unquote(cookie_value)
-        access_token_parts = decoded_cookie_value.split('||')
-        if len(access_token_parts) < 2:
-            print(decoded_cookie_value)
-            raise ValueError('Access token not found in steamLoginSecure cookie')
-        access_token = access_token_parts[1]
-        return access_token
+    def _set_access_token(self) -> str | None:
+        cookie = next((cookie for cookie in self._session.cookies if cookie.name == 'steamLoginSecure'), None)
+        if cookie is None:
+            return None
+
+        access_token_parts = urlparse.unquote(cookie.value).split('||')
+        return access_token_parts[1] if len(access_token_parts) >= 2 else None
 
     @login_required
     def logout(self) -> None:
@@ -183,9 +182,9 @@ class SteamClient:
         params = {'l': 'english', 'count': count}
 
         full_response = self._session.get(url, params=params)
-        response_dict = full_response.json()
         if full_response.status_code == 429:
             raise TooManyRequests('Too many requests, try again later.')
+        response_dict = full_response.json()
 
         if response_dict is None or response_dict.get('success') != 1:
             raise ApiException('Success value should be 1.')
@@ -193,7 +192,8 @@ class SteamClient:
         return merge_items_with_descriptions_from_inventory(response_dict, game) if merge else response_dict
 
     def _get_session_id(self) -> str:
-        return self._session.cookies.get_dict(domain="steamcommunity.com", path="/").get('sessionid')
+        cookies = self._session.cookies.get_dict(domain="steamcommunity.com", path="/")
+        return cookies.get('sessionid') or self._session.cookies.get_dict().get('sessionid')
 
     def get_trade_offers_summary(self) -> dict:
         params = {'key': self._api_key}
@@ -207,8 +207,10 @@ class SteamClient:
         use_webtoken: bool = True,
         max_retry: int = 5,
     ) -> dict:
+        auth_key = 'access_token' if use_webtoken and self._access_token else 'key'
+        auth_value = self._access_token if auth_key == 'access_token' else self._api_key
         params = {
-            'access_token' if use_webtoken else 'key': self._access_token if use_webtoken else self._api_key,
+            auth_key: auth_value,
             'get_sent_offers': int(sent),
             'get_received_offers': int(received),
             'get_descriptions': 1,
@@ -249,7 +251,7 @@ class SteamClient:
 
     def get_trade_offer(self, trade_offer_id: str, merge: bool = True, use_webtoken: bool = False) -> dict:
         params = {'tradeofferid': trade_offer_id, 'language': 'english'}
-        if use_webtoken:
+        if use_webtoken and self._access_token:
             params['access_token'] = self._access_token
         else:
             params['key'] = self._api_key

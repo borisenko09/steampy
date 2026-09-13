@@ -260,7 +260,7 @@ class Credentials:
 
 def ping_proxy(proxies: dict) -> bool:
     try:
-        requests.get('https://steamcommunity.com/', proxies=proxies)
+        requests.get('https://steamcommunity.com/', proxies=proxies, timeout=30)
         return True
     except Exception:
         raise ProxyConnectionError('Proxy not working for steamcommunity.com')

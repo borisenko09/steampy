@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from base64 import b64encode
-from http import HTTPStatus
 from typing import TYPE_CHECKING
 
 from rsa import PublicKey, encrypt
 
 from steampy import guard
-from steampy.exceptions import ApiException, CaptchaRequired, InvalidCredentials
+from steampy.exceptions import ApiException, CaptchaRequired, InvalidCredentials, SteamResponseError
 from steampy.models import SteamUrl
 from steampy.utils import create_cookie
 
@@ -36,14 +35,27 @@ class LoginExecutor:
 
     def login(self) -> Session:
         login_response = self._send_login_request()
-        if not login_response.json()['response']:
+        login_data = self._get_json(login_response, 'Beginning Steam login')
+        if not login_data.get('response'):
             raise ApiException('No response received from Steam API. Please try again later.')
-        self._check_for_captcha(login_response)
-        self._update_steam_guard(login_response)
+        self._check_for_captcha(login_data)
+        self._update_steam_guard(login_data)
         finalized_response = self._finalize_login()
-        self._perform_redirects(finalized_response.json())
+        self._perform_redirects(self._get_json(finalized_response, 'Finalizing Steam login'))
         self.set_sessionid_cookies()
         return self.session
+
+    @staticmethod
+    def _get_json(response: Response, operation: str) -> dict:
+        if not response.ok:
+            raise SteamResponseError(f'{operation} failed.', response)
+        try:
+            data = response.json()
+        except ValueError as error:
+            raise SteamResponseError(f'{operation} returned invalid JSON.', response) from error
+        if not isinstance(data, dict):
+            raise SteamResponseError(f'{operation} returned an unexpected JSON payload.', response)
+        return data
 
     def _send_login_request(self) -> Response:
         rsa_params = self._fetch_rsa_params()
@@ -77,8 +89,9 @@ class LoginExecutor:
         request_data = {'account_name': self.username}
         response = self._api_call('GET', 'IAuthenticationService', 'GetPasswordRSAPublicKey', params=request_data)
 
-        if response.status_code == HTTPStatus.OK and 'response' in response.json():
-            key_data = response.json()['response']
+        response_data = self._get_json(response, 'Fetching Steam RSA parameters')
+        if 'response' in response_data:
+            key_data = response_data['response']
             # Steam may return an empty 'response' value even if the status is 200
             if 'publickey_mod' in key_data and 'publickey_exp' in key_data and 'timestamp' in key_data:
                 rsa_mod = int(key_data['publickey_mod'], 16)
@@ -103,8 +116,8 @@ class LoginExecutor:
         }
 
     @staticmethod
-    def _check_for_captcha(login_response: Response) -> None:
-        if login_response.json().get('captcha_needed', False):
+    def _check_for_captcha(login_data: dict) -> None:
+        if login_data.get('captcha_needed', False):
             raise CaptchaRequired('Captcha required')
 
     def _enter_steam_guard_if_necessary(self, login_response: Response) -> Response:
@@ -127,10 +140,11 @@ class LoginExecutor:
             multipart_fields = {key: (None, str(value)) for key, value in pass_data['params'].items()}
             self.session.post(pass_data['url'], files=multipart_fields)
 
-    def _update_steam_guard(self, login_response: Response) -> None:
-        client_id = login_response.json()['response']['client_id']
-        steamid = login_response.json()['response']['steamid']
-        request_id = login_response.json()['response']['request_id']
+    def _update_steam_guard(self, login_data: dict) -> None:
+        response_data = login_data['response']
+        client_id = response_data['client_id']
+        steamid = response_data['steamid']
+        request_id = response_data['request_id']
         code_type = 3
         code = guard.generate_one_time_code(self.shared_secret)
 
@@ -138,15 +152,14 @@ class LoginExecutor:
         response = self._api_call(
             'POST', 'IAuthenticationService', 'UpdateAuthSessionWithSteamGuardCode', params=update_data,
         )
-        if response.status_code == HTTPStatus.OK:
-            self._pool_sessions_steam(client_id, request_id)
-        else:
-            raise Exception('Cannot update Steam guard')
+        self._get_json(response, 'Updating Steam Guard session')
+        self._pool_sessions_steam(client_id, request_id)
 
     def _pool_sessions_steam(self, client_id: str, request_id: str) -> None:
         pool_data = {'client_id': client_id, 'request_id': request_id}
         response = self._api_call('POST', 'IAuthenticationService', 'PollAuthSessionStatus', params=pool_data)
-        self.refresh_token = response.json()['response']['refresh_token']
+        response_data = self._get_json(response, 'Polling Steam login session')
+        self.refresh_token = response_data['response']['refresh_token']
 
     def _finalize_login(self) -> Response:
         sessionid = self.session.cookies['sessionid']

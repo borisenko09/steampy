@@ -2,7 +2,6 @@ import json
 import urllib.parse
 from decimal import Decimal
 from http import HTTPStatus
-import time
 
 from requests import Session
 
@@ -211,14 +210,18 @@ class SteamMarket:
         if response.get('wallet_info') and response['wallet_info'].get('success') == 1:
             return response
 
-        if response.get('success') == 22 and response.get('confirmation', {}).get('confirmation_id'):
+        confirmation_id = response.get('confirmation', {}).get('confirmation_id')
+        if response.get('success') == 22 and confirmation_id:
             try:
-                data['confirmation'] = response['confirmation']['confirmation_id']
-                self._confirm_buy_listing()
-                time.sleep(1)
-                return self._session.post(
+                data['confirmation'] = confirmation_id
+                if not self._confirm_buy_listing(confirmation_id):
+                    raise ApiException('Unable to confirm buy listing in Steam Guard.')
+                confirmed_response = self._session.post(
                     f'{SteamUrl.COMMUNITY_URL}/market/buylisting/{market_id}', data=data, headers=headers,
                 ).json()
+                if confirmed_response.get('wallet_info', {}).get('success') == 1:
+                    return confirmed_response
+                response = confirmed_response
             except (KeyError, TypeError) as error:
                 raise ApiException('Steam requested confirmation, but returned invalid data (confirmation_id).') from error
             except Exception as error:
@@ -256,11 +259,8 @@ class SteamMarket:
         )
         return con_executor.confirm_sell_listing(asset_id)
 
-    def _confirm_buy_listing(self) -> dict:
+    def _confirm_buy_listing(self, confirmation_id: str) -> bool:
         con_executor = ConfirmationExecutor(
             self._steam_guard['identity_secret'], self._steam_guard['steamid'], self._session,
         )
-        confirmations = con_executor._get_confirmations()
-        for confirmation in confirmations:
-            con_executor._send_confirmation(confirmation)
-        return {'success': True, 'message': 'All pending confirmations have been accepted.'}
+        return con_executor.confirm_by_id(confirmation_id)
