@@ -61,7 +61,7 @@ class SteamMarket:
 
     @login_required
     def get_my_market_listings(self) -> dict:
-        response = self._session.get(f'{SteamUrl.COMMUNITY_URL}/market')
+        response = self._session.get(f'{SteamUrl.COMMUNITY_URL}/market/?count=100')
         if response.status_code != HTTPStatus.OK:
             raise ApiException(f'There was a problem getting the listings. HTTP code: {response.status_code}')
 
@@ -81,7 +81,7 @@ class SteamMarket:
             )
 
             if n_showing < n_total < 1000:
-                url = f'{SteamUrl.COMMUNITY_URL}/market/mylistings/render/?query=&start={n_showing}&count={-1}'
+                url = f'{SteamUrl.COMMUNITY_URL}/market/mylistings/render/?query=&start=0&count={-1}'
                 response = self._session.get(url)
                 if response.status_code != HTTPStatus.OK:
                     raise ApiException(f'There was a problem getting the listings. HTTP code: {response.status_code}')
@@ -146,6 +146,7 @@ class SteamMarket:
             'market_hash_name': market_name,
             'price_total': str(Decimal(price_single_item) * Decimal(quantity)),
             'quantity': quantity,
+            'confirmation': '0',
         }
         headers = {
             'Referer': f'{SteamUrl.COMMUNITY_URL}/market/listings/{game.app_id}/{urllib.parse.quote(market_name)}',
@@ -153,12 +154,31 @@ class SteamMarket:
 
         response = self._session.post(f'{SteamUrl.COMMUNITY_URL}/market/createbuyorder/', data, headers=headers).json()
 
-        if (success := response.get('success')) != 1:
-            raise ApiException(
-                f'There was a problem creating the order. Are you using the right currency? success: {success}',
-            )
+        if response.get('success') == 1:
+            return response
 
-        return response
+        confirmation_id = response.get('confirmation', {}).get('confirmation_id')
+        if confirmation_id:
+            if not self._steam_guard:
+                raise ApiException('Buy order requires mobile confirmation, but steam_guard is not configured.')
+
+            confirmation_executor = ConfirmationExecutor(
+                self._steam_guard['identity_secret'], self._steam_guard['steamid'], self._session,
+            )
+            if not confirmation_executor.confirm_by_id(confirmation_id):
+                raise ApiException('Unable to confirm buy order in Steam Guard.')
+
+            data['confirmation'] = confirmation_id
+            response = self._session.post(
+                f'{SteamUrl.COMMUNITY_URL}/market/createbuyorder/', data=data, headers=headers,
+            ).json()
+            if response.get('success') == 1:
+                return response
+
+        raise ApiException(
+            f'There was a problem creating the order. Are you using the right currency? '
+            f'success: {response.get("success")}',
+        )
 
     @login_required
     def buy_item(

@@ -170,14 +170,14 @@ def get_market_listings_from_html(html: str) -> dict:
     buy_orders_dict = {}
 
     for node in nodes:
-        if 'My sell listings' in node.text:
-            sell_listings_dict = get_sell_listings_from_node(node)
-        elif 'My listings awaiting confirmation' in node.text:
+        if 'My sell listings' in node.text or 'Мои лоты на продажу' in node.text:
+            sell_listings_dict.update(get_sell_listings_from_node(node))
+        elif 'My listings awaiting confirmation' in node.text or 'Лоты, ожидающие подтверждения' in node.text:
             sell_listings_awaiting_conf = get_sell_listings_from_node(node)
             for listing in sell_listings_awaiting_conf.values():
                 listing['need_confirmation'] = True
             sell_listings_dict.update(sell_listings_awaiting_conf)
-        elif 'My buy orders' in node.text:
+        elif 'My buy orders' in node.text or 'Мои запросы на покупку' in node.text:
             buy_orders_dict = get_buy_orders_from_node(node)
 
     return {'buy_orders': buy_orders_dict, 'sell_listings': sell_listings_dict}
